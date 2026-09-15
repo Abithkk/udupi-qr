@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Opening the menu</title>
+<!--
+  Udupi POS - table QR relay.
+
+  Source of truth: qr-relay/index.html in the udupi-pos repo. scripts/qr-relay.ts
+  copies it into the GitHub Pages repo on start - edit the source, not the copy.
+
+  A table card encodes  <this folder>/?t=<table token>.  This page reads the
+  restaurant's current address from address.json (kept true by the restaurant
+  PC), checks that address answers, and forwards the diner to <address>/t/<token>.
+-->
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 16px;
+    background: #fbfaf7;
+    color: #1a1d23;
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+    text-align: center;
+  }
+  main { max-width: 22rem; }
+  .spinner {
+    width: 40px;
+    height: 40px;
+    margin: 0 auto 16px;
+    border-radius: 50%;
+    border: 4px solid #ece6dc;
+    border-top-color: #c2620a;
+    animation: spin 0.9s linear infinite;
+  }
+  .spinner[hidden] { display: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+  h1 { margin: 0 0 4px; font-size: 1.125rem; font-weight: 600; }
+  p { margin: 0; color: #5f646d; font-size: 0.9375rem; }
+</style>
+</head>
+<body>
+<main>
+  <div class="spinner" id="spinner" aria-hidden="true"></div>
+  <h1 id="title">Opening the menu…</h1>
+  <p id="detail" aria-live="polite"></p>
+  <noscript><p>Please turn on JavaScript to open the menu.</p></noscript>
+</main>
+<script>
+(function () {
+  "use strict";
+
+  // Keep in step with src/lib/qr-relay.ts (RELAY_PROBE_PATH, relayCardUrl).
+  var TOKEN_SHAPE = /^[A-Za-z0-9_-]{8,64}$/;
+  var PROBE_PATH = "/icons/icon-192.png";
+  var PROBE_TIMEOUT_MS = 8000;
+  var RETRY_MS = 5000;
+  var SLOW_AFTER_MS = 90000;
+
+  var title = document.getElementById("title");
+  var detail = document.getElementById("detail");
+  var spinner = document.getElementById("spinner");
+
+  function say(heading, text) {
+    title.textContent = heading;
+    detail.textContent = text || "";
+  }
+
+  function tableToken() {
+    var token = new URLSearchParams(location.search).get("t");
+    return token && TOKEN_SHAPE.test(token) ? token : null;
+  }
+
+  // Read fresh on every scan. GitHub Pages caches files for ten minutes; a new
+  // query string each time makes it a new URL, so a restart is picked up as
+  // soon as the new address is published rather than ten minutes later.
+  function currentAddress() {
+    return fetch("address.json?v=" + Date.now(), { cache: "no-store" })
+      .then(function (response) {
+        if (!response.ok) throw new Error("address.json " + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        var url = new URL(data.url);
+        if (url.protocol !== "https:") throw new Error("address is not https");
+        return url.origin;
+      });
+  }
+
+  // An <img> needs no CORS and fires onload only when a real image comes back.
+  // Cloudflare's "tunnel not found" page and a stopped server both land in
+  // onerror, so a dead address keeps the diner here, retrying, instead of on an
+  // error page they cannot do anything with.
+  function answers(origin) {
+    return new Promise(function (resolve, reject) {
+      var image = new Image();
+      var settled = false;
+      var timer = setTimeout(function () { finish(false); }, PROBE_TIMEOUT_MS);
+      function finish(ok) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        image.onload = image.onerror = null;
+        if (ok) resolve(); else reject(new Error("no answer from " + origin));
+      }
+      image.onload = function () { finish(true); };
+      image.onerror = function () { finish(false); };
+      image.src = origin + PROBE_PATH + "?probe=" + Date.now();
+    });
+  }
+
+  var token = tableToken();
+  if (!token) {
+    spinner.hidden = true;
+    say("This code looks incomplete", "Please ask a member of staff for help.");
+    return;
+  }
+
+  var startedAt = Date.now();
+
+  function attempt() {
+    currentAddress()
+      .then(function (origin) {
+        return answers(origin).then(function () {
+          // replace, not assign: Back from the menu should not land here and
+          // bounce straight forward again.
+          location.replace(origin + "/t/" + encodeURIComponent(token));
+        });
+      })
+      .catch(function () {
+        var slow = Date.now() - startedAt > SLOW_AFTER_MS;
+        say(
+          "The menu is starting up…",
+          slow
+            ? "This is taking longer than usual. Please ask a member of staff."
+            : "This usually takes under a minute. Please keep this page open."
+        );
+        setTimeout(attempt, RETRY_MS);
+      });
+  }
+
+  attempt();
+})();
+</script>
+</body>
+</html>
